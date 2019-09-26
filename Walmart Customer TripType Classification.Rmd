@@ -1,0 +1,196 @@
+---
+ title: "Walmart Customer Trip Type Classification"
+ Date : '2018-08-28'
+ output: html_document
+---
+
+<iframe width="678" height="381" src="https://www.youtube.com/embed/OtdN0yVjgK4" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+
+
+
+### 1. 분석목적 (Purpose of Analysis)
+Walmart Recruiting: Trip Type Classification 이용,
+Walmart 소비자 패턴을 분석하여 범주화된 Trip Type에 해당되는 VisitNumber 예측 및 분류.
+
+
+### 2. 사용한 라이브러리
+```{r }
+library(party)
+library(dplyr)
+library(e1071)
+library(caret)
+library(ggplot2)
+library(MASS)
+library(funModeling)
+library(kknn)
+library(plotrix)
+library(dplyr)
+library(party)
+library(Matrix)
+library(pROC)
+library(randomForest)
+```
+
+#### 수정 전 데이터 
+```{r  }
+wal_dataset <- read.csv("C:/Users/rudghksldl/Desktop/train 3.csv")
+
+head(wal_dataset, 20)
+```
+
+### 변수 설명
+TripType - a categorical id representing the type of shopping trip the customer made.    This is the ground truth that you are predicting.    TripType_999 is an "other" category.
+VisitNumber - an id corresponding to a single trip by a single customer    
+Weekday - the weekday of the trip   
+Upc - the UPC number of the product purchased   
+ScanCount - the number of the given item that was purchased. A negative value indicates a product return.    
+DepartmentDescription - a high-level description of the item's department    
+FinelineNumber - a more refined category for each of the products, created by Walmart    
+   
+
+
+### 변수 변환
+```{r echo = TRUE }
+dt <- na.omit(read.csv("C:/Users/rudghksldl/Desktop/newdata (1).csv"))
+dt <- dt[ ,c(-1,-2,-5,-6)]
+dt$triptype <- as.factor(dt$triptype)
+glimpse(dt)
+```
+
+### 새로 만든 변수 설명
+id             - 고객 고유값    
+num_prod       - 구매 + 환불(-)    
+weekday        - 방문요일    
+RefundCount    - 고객의 총 환불량    
+TotalDescCount - 고객의 총 구매량    
+MaxDescCount   - 최대값을 갖는 DepartmentDescription의 양    
+max_prodrate   - 최대값을 갖는 DepartmentDescription의 해당비율   
+
+DepartmentDescription의 dummy 변수(one hot 인코딩) - 68열    
+
+TripType - 예측해야할 타겟 변수   
+
+
+#### 4. Model Accuracy 판단 
+
+```{r}
+# train / validation data
+trn_idx <- sample(1:dim(dt)[1], round(0.7*dim(dt)[1]))
+w_trn <- dt[trn_idx, ]
+w_val <- dt[-trn_idx, ]
+```
+
+### 4.1 KNN
+<!-- train kknn 함수로 최적의 k 값 찾기 -->
+<!-- ```{r} -->
+<!-- w_knn_tr <- train.kknn(triptype ~ ., w_trn, kmax=13, distance=2, kernel="rectangular") -->
+
+<!-- w_knn_tr$best.parameters -->
+<!-- ``` -->
+찾은 K 값으로 모델 적합
+```{r}
+w_knn <- kknn(triptype ~ .,
+              w_trn,
+              w_val,
+              k = 7,
+              distance = 2,
+              kernel = "rectangular")
+```
+모델 적합 후 정확도 확인
+```{r}
+pima_knn_fit <- fitted(w_knn)
+pima_knn_cf <- confusionMatrix(w_val$triptype, as.factor(pima_knn_fit))
+pima_knn_cf
+```
+
+### 4.2 RandomForest
+최적의 파라미터를 찾기 위한 그리드 서치
+```{r}
+## 하이퍼 파라미터 정의
+ntree = c(10, 20)
+mtry = c(3, 5, 10)
+
+
+# 결과값 넣을 메트릭스
+tree_result <- matrix(0, length(ntree)*length(mtry),6)
+iter_cnt = 1
+i = 1
+j = 1
+
+
+# 위 파라미터들 다 넣는 포문
+for(i in 1:length(ntree)){
+  for(j in 1:length(mtry)){
+    cat("ntree : ", ntree[i],
+        ", mtry : ", mtry[j],
+        "\n")
+    
+    
+    ## 위 파라미터로 RF 모형 적합
+    
+    tmp_rf <- randomForest(triptype ~ ., 
+                           data = w_trn,
+                           ntree = ntree[i],
+                           mtry = mtry[j]
+    )
+    
+    ## 위 적합으로 검증데이터 예측 수행
+    tmp_tree_val_pred <- predict(tmp_rf, newdata = w_val, type = "class")
+    
+    
+    ## 혼동행렬 작성
+    tmp_tree_val_cf <- confusionMatrix(as.factor(tmp_tree_val_pred), w_val$triptype)
+    
+    ## AUROC
+    
+    
+    ### 조건들 저장
+    tree_result[iter_cnt, 1] = ntree[i]
+    tree_result[iter_cnt, 2] = mtry[j]
+    tree_result[iter_cnt, 3] = tmp_tree_val_cf$byClass['Recall']
+    tree_result[iter_cnt, 4] = tmp_tree_val_cf$byClass['Precision']
+    tree_result[iter_cnt, 5] = tmp_tree_val_cf$overall['Accuracy']
+    tree_result[iter_cnt, 6] = tmp_tree_val_cf$byClass['F1']
+    
+    
+    
+    
+    iter_cnt = iter_cnt +1
+  }
+}
+
+
+
+colnames(tree_result) <-  c("ntree", "mtry", "Recall", "Precision", "Accuracy",
+                            "F1")
+
+
+# 어큐러시 와  F1 지표를 기준으로 정렬
+tree_result.df <- data.frame(tree_result)
+tree_result.df <- tree_result.df[order(tree_result.df[,5],tree_result.df[,6],decreasing = T),]
+head(tree_result.df)
+```
+
+
+최적조건으로 최종적합
+```{r}
+# 최적 조건으로 학습나무를 학습 with 전체 데이터 
+tree <- randomForest(triptype ~ .,
+                     data = w_trn , 
+                     ntree = 20,
+                     mtry = 10)
+
+tree_all_prediction <- predict(tree, newdata = w_val)
+
+# 최종 완성된 결정나무의 분류 성능 확인
+tree_all_cm <- confusionMatrix(tree_all_prediction, w_val$triptype)
+tree_all_cm
+
+# 시각화
+varImpPlot(tree)
+plot(tree)
+```
+
+
+
+#### 5. 설정 모델로 예측 및 평가
